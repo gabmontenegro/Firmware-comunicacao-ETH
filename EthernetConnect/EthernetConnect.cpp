@@ -1,0 +1,159 @@
+#include "EthernetConnect.h"
+#define MAX_TRY_WRITE 20
+
+
+EthernetFunctions ::EthernetFunctions() {}
+
+int EthernetFunctions :: readEthernet(char *message)
+{
+
+	Serial debug(USBTX, USBRX);
+		int n = 0;
+		
+		if (Cliente.is_connected() == false)
+        Cliente.close();
+		
+		n = Cliente.receive(message, strlen(message) );//TODO
+		//debug.printf("Recebido Ethernet: \n %s END\n ", message);
+		
+		return n;
+}
+
+bool EthernetFunctions ::ConnectServer(unsigned char MAC_Addr[6], WIZnetInterface *_ethernet, const char *IP_Addr, const char *IP_Subnet, const char *IP_Gateway)
+{
+#if USE_DHCP
+    int ret = _ethernet->init(MAC_Addr);
+#else
+    int ret = _ethernet->init(MAC_Addr, IP_Addr, IP_Subnet, IP_Gateway);
+#endif
+    Serial debug(USBTX, USBRX);
+
+    debug.baud(115200);
+
+    if (!ret)
+    {
+       debug.printf("Initialized, MAC: %s\r\n", _ethernet->getMACAddress());
+        ret = _ethernet->connect();
+        if (!ret)
+        {
+            debug.printf("IP: %s, MASK: %s, GW: %s\r\n",_ethernet->getIPAddress(), _ethernet->getNetworkMask(), _ethernet->getGateway());
+            ipAddress = _ethernet->getIPAddress();
+
+            Servidor.bind(LOOPBACKPORT);
+            Servidor.listen();
+            return true;
+        }
+        else
+        {
+            debug.printf("Error ethernet.connect() - ret = %d\r\n", ret);
+            return false;
+        }
+    }
+    else
+    {
+        debug.printf("Error ethernet.init() - ret = %d\r\n", ret);
+        return false;
+    }
+}
+
+void EthernetFunctions ::ConnectClient()
+{
+
+    Serial debug(USBTX, USBRX);
+
+    debug.baud(115200);
+
+    debug.printf("\nWait for new connection...\r\n");
+    Servidor.accept(Cliente);
+		//mudei aqui para blocking true, inicialmente era blocking false e timeout 1000.
+    Cliente.set_blocking(false, 0); // Timeout=0.
+    debug.printf("Connection from: %s\r\n", Cliente.get_address());
+	
+}
+
+int EthernetFunctions::sendLength(uint32_t len, char * msg) {
+
+    if (len < 126) {
+        msg[0] = len | (1<<7);
+        return 1;
+    } else if (len < 65535) {
+        msg[0] = 126 | (1<<7);
+        msg[1] = (len >> 8) & 0xff;
+        msg[2] = len & 0xff;
+        return 3;
+    } else {
+        msg[0] = 127 | (1<<7);
+        for (int i = 0; i < 8; i++) {
+            msg[i+1] = (len >> i*8) & 0xff;
+        }
+        return 9;
+    }
+}	
+	
+int EthernetFunctions::readChar(char * pC, bool block) {
+    return read(pC, 1, 1);
+}
+
+int EthernetFunctions::sendOpcode(uint8_t opcode, char * msg) {
+    msg[0] = 0x80 | (opcode & 0x0f);
+    return 1;
+}
+
+int EthernetFunctions::sendMask(char * msg) {
+    for (int i = 0; i < 4; i++) {
+        msg[i] = 0;
+    }
+    return 4;
+}	
+	
+int EthernetFunctions::write(char * str, int len) {
+    int res = 0, idx = 0;
+    
+    for (int j = 0; j < MAX_TRY_WRITE; j++) {
+    
+        if(!Cliente.is_connected())
+        {   
+					  
+            break;
+        }
+
+        if ((res = Cliente.send_all(str + idx, len - idx)) == -1)
+            continue;
+
+        idx += res;
+        
+        if (idx == len)
+            return len;}
+	 
+	 return (idx == 0) ? -1 : idx;
+}
+
+int EthernetFunctions::send(char * str) 
+{
+    char msg[strlen(str) + 15];
+    int idx = 0;
+    idx = sendOpcode(0x01, msg);
+    idx += sendLength(strlen(str), msg + idx);
+    idx += sendMask(msg + idx);
+    memcpy(msg+idx, str, strlen(str));
+    int res = write(msg, idx + strlen(str));
+	
+    return res;
+}
+
+int EthernetFunctions::read(char * str, int len, int min_len) 
+{
+    int res = 0, idx = 0;
+    
+    for (int j = 0; j < MAX_TRY_WRITE; j++) {
+
+        if ((res = Cliente.receive_all(str + idx, len - idx)) == -1)
+            continue;
+
+        idx += res;
+        
+        if (idx == len || (min_len != -1 && idx > min_len))
+            return idx;
+    }
+		   return (idx == 0) ? -1 : idx;
+}
